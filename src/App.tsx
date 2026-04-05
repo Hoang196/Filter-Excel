@@ -58,8 +58,10 @@ const parseDate = (value: any): Date => {
 };
 
 const calcAge = (dob: Date) => new Date().getFullYear() - dob.getFullYear();
-
 const calcYears = (date: Date) => new Date().getFullYear() - date.getFullYear();
+
+const formatDate = (d?: Date) =>
+  d ? `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}` : "";
 
 // ================= RULE CONFIG =================
 const RULES: Record<string, Rule> = {
@@ -86,39 +88,48 @@ const evaluateEmployee = (e: Employee, type: string): Result => {
   const age = calcAge(e.dob);
   const years = calcYears(e.startDate);
 
-  // 2 năm gần nhất (không phụ thuộc thứ tự)
+  // 2 năm gần nhất
   const last2 = e.scores.slice(-2).map(normalize);
   if (!last2.every((s) => s === "tốt")) {
-    reasons.push("Không đạt xếp loại 2 năm");
+    reasons.push("Không đạt xếp loại 2 năm liền kề");
   }
 
   // trình độ
   const edu = normalize(e.education);
-  if (!edu.includes("đại học") && !edu.includes("thạc sĩ")) {
-    reasons.push("Không đạt trình độ");
+  if (!edu.includes("đại học chính quy") && !edu.includes("thạc sĩ")) {
+    reasons.push("Không đạt trình độ (ĐH chính quy / ThS)");
   }
 
   // tuổi + năm
   if (age > rule.maxAge) reasons.push("Quá tuổi");
-  if (years < rule.minYears) reasons.push("Chưa đủ năm công tác");
+  if (years < rule.minYears) reasons.push("Chưa đủ năm công tác BIDV");
 
-  // chức vụ đúng loại
+  // chức vụ
   const pos = normalize(e.position);
-  if (type === "truong_phong" && !pos.includes("phó")) {
-    reasons.push("Chưa đúng chức vụ");
-  }
-  if (type === "pho_phong" && !pos.includes("chuyên viên")) {
-    reasons.push("Chưa đạt cấp chuyên viên");
+
+  if (type === "truong_phong") {
+    if (
+      !pos.includes("phó trưởng phòng") &&
+      !pos.includes("phó giám đốc pgd")
+    ) {
+      reasons.push("Chưa là Phó TP / PGD");
+    }
   }
 
-  // thời gian giữ
+  if (type === "pho_phong") {
+    if (!pos.includes("chuyên viên")) {
+      reasons.push("Chưa đạt cấp chuyên viên");
+    }
+  }
+
+  // thời gian giữ chức
   if ((e.positionDuration || 0) < rule.minPositionMonths) {
-    reasons.push("Chưa đủ thời gian giữ chức");
+    reasons.push("Chưa đủ 6 tháng giữ chức");
   }
 
   // điểm thi
   if (rule.requireExam && (e.examScore || 0) < (rule.minExam || 0)) {
-    reasons.push("Điểm < 70");
+    reasons.push("Điểm thi < 70");
   }
 
   return {
@@ -162,6 +173,20 @@ const parseExcel = (file: File): Promise<Employee[]> => {
   });
 };
 
+// ================= EXPORT MAPPER =================
+const mapExport = (r: Result) => ({
+  "Mã cán bộ": r.id,
+  "Họ tên": r.name,
+  "Ngày sinh": formatDate(r.dob),
+  "Trình độ": r.education,
+  "Số năm công tác": calcYears(r.startDate),
+  "Chức vụ": r.position,
+  "Thời gian giữ chức (tháng)": r.positionDuration,
+  "Điểm thi": r.examScore,
+  "Kết quả": r.status === "PASS" ? "Đạt" : "Không đạt",
+  "Lý do": r.reasons.join(", "),
+});
+
 // ================= APP =================
 export default function App() {
   const [data, setData] = useState<Employee[]>([]);
@@ -198,17 +223,16 @@ export default function App() {
 
     const wb = XLSX.utils.book_new();
 
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pass), "Dat");
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(pass.map(mapExport)),
+      "Danh sách đạt",
+    );
 
     XLSX.utils.book_append_sheet(
       wb,
-      XLSX.utils.json_to_sheet(
-        fail.map((f) => ({
-          ...f,
-          reasons: f.reasons.join(", "),
-        })),
-      ),
-      "KhongDat",
+      XLSX.utils.json_to_sheet(fail.map(mapExport)),
+      "Danh sách không đạt",
     );
 
     XLSX.writeFile(wb, "ket_qua_loc.xlsx");
@@ -233,6 +257,21 @@ export default function App() {
       title: "Lý do",
       render: (r: Result) => r.reasons.join(", "),
     },
+  ];
+
+  const previewColumns = [
+    { title: "Mã", dataIndex: "id" },
+    { title: "Tên", dataIndex: "name" },
+    {
+      title: "Ngày sinh",
+      render: (r: Employee) => formatDate(r.dob),
+    },
+    { title: "Trình độ", dataIndex: "education" },
+    {
+      title: "KQ 3 năm",
+      render: (r: Employee) => r.scores.join(" | "),
+    },
+    { title: "Chức vụ", dataIndex: "position" },
   ];
 
   return (
@@ -279,7 +318,9 @@ export default function App() {
             </Col>
 
             <Col>
-              <Button onClick={exportExcel}>Export</Button>
+              <Button onClick={exportExcel} disabled={!results.length}>
+                Export
+              </Button>
             </Col>
           </Row>
         </div>
@@ -325,7 +366,7 @@ export default function App() {
         footer={null}
         width={900}
       >
-        <Table dataSource={data} rowKey="id" />
+        <Table dataSource={data} columns={previewColumns} rowKey="id" />
       </Modal>
     </div>
   );
